@@ -5,9 +5,11 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="EnvDTE80" Version="8.0.3" />
-    <PackageReference Include="RunningVSInstanceFinderLib" Version="1.0.20278.6-shelve-828342" />
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="RunningVSInstanceFinder">
+      <HintPath>..\..\RunningVSInstanceFinder\RunningVSInstanceFinder\bin\Debug\net472\RunningVSInstanceFinder.dll</HintPath>
+    </Reference>
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 </Project>
