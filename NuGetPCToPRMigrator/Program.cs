@@ -1,16 +1,18 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 using System.Windows.Forms;
 using HWND = System.IntPtr;
 
 namespace Ceridian
 {
+    using EnvDTE;
+    using Process = System.Diagnostics.Process;
+    using Thread = System.Threading.Thread;
+
     public static class Program
     {
         private const string DEVENV = @"C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\IDE\devenv.exe";
@@ -103,7 +105,7 @@ namespace Ceridian
 
         private static T ExecuteWithRetry<T>(Func<T> func)
         {
-            int retryCount = 30;
+            int retryCount = 2;
             for (; ; )
             {
                 try
@@ -122,10 +124,9 @@ namespace Ceridian
             }
         }
 
-        private static string StartProjectMigration(EnvDTE80.DTE2 dte, int i, int total, string solutionName, string projectFilePath)
+        private static string StartProjectMigration(EnvDTE80.DTE2 dte, int i, int total, string solutionName, string projectName)
         {
-            Console.WriteLine($"[{i}/{total}] {projectFilePath}");
-            var projectName = Path.GetFileNameWithoutExtension(projectFilePath);
+            Console.WriteLine($"[{i}/{total}] {projectName}");
             var projectItem = dte.ToolWindows.SolutionExplorer.GetItem($@"{solutionName}\{projectName}");
             projectItem.Select(EnvDTE.vsUISelectionType.vsUISelectionTypeSelect);
             dte.ExecuteCommand("ClassViewContextMenus.ClassViewProject.Migratepackages.configtoPackageReference");
@@ -193,14 +194,38 @@ namespace Ceridian
 
             var solutionName = Path.GetFileNameWithoutExtension(slnFilePath);
 
+            IEnumerable<EnvDTE.Project> FindProjectsRecursive(EnvDTE.Project p, string prefix)
+            {
+                if (IsClassLibraryWithPackagesConfig(p))
+                    yield return p;
+                if (p.Kind == FolderKind)
+                {
+                    foreach (EnvDTE.ProjectItem pProjectItem in p.ProjectItems)
+                    {
+                        if (pProjectItem.SubProject != null && (pProjectItem.SubProject.Kind == ProjectKind || pProjectItem.SubProject.Kind == FolderKind))
+                        {
+                            var recursePrefix = string.IsNullOrEmpty(prefix) ? "" : "\\";
+                            recursePrefix += p.FullName;
+                            var recurseResult = FindProjectsRecursive(pProjectItem.SubProject, recursePrefix);
+                            foreach (var item in recurseResult)
+                            {
+                                yield return item;
+                            }
+
+                        }
+                    }
+                }
+            }
+
             ExecuteWithRetry(() => InitializeNuGetPackageManager(dte));
-            var projects = ExecuteWithRetry(() => dte.Solution.Projects.Cast<EnvDTE.Project>().Where(IsClassLibraryWithPackagesConfig).ToList());
+            var projects = ExecuteWithRetry(() => dte.Solution.Projects.Cast<EnvDTE.Project>().SelectMany(x=>FindProjectsRecursive(x,null)).ToList());
             int i = 0;
             foreach (var project in projects)
             {
                 ++i;
-                var projectFullName = ExecuteWithRetry(() => project.FullName);
-                var projectName = ExecuteWithRetry(() => StartProjectMigration(dte, i, projects.Count, solutionName, projectFullName));
+                var projectFullName = ExecuteWithRetry(() => project.UniqueName);
+                var projectName = GetProjectName(projectFullName);
+                ExecuteWithRetry(() => StartProjectMigration(dte, i, projects.Count, solutionName, projectName));
                 var handle = WaitForResult(GetDialogHandle, h => h != HWND.Zero);
 
                 SetForegroundWindow(handle);
@@ -223,8 +248,16 @@ namespace Ceridian
             }
         }
 
+        static string GetProjectName(string uniqueName)
+        {
+            return string.Join("\\", uniqueName.Split('\\').Where(x => !x.EndsWith(".csproj")));
+        }
+
         private static bool IsWebApplication(EnvDTE.Project project) =>
             project.Properties.Cast<EnvDTE.Property>().Any(p => p.Name == "WebApplication.UseIISExpress");
+
+        const string FolderKind = "{66A26720-8FB5-11D2-AA7E-00C04F688DDE}";
+        const string ProjectKind = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
 
         private static bool IsClassLibraryWithPackagesConfig(EnvDTE.Project p) =>
             p.Kind == "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}" &&
