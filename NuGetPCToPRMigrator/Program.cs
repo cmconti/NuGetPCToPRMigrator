@@ -127,11 +127,27 @@ namespace Ceridian
         private static string StartProjectMigration(EnvDTE80.DTE2 dte, int i, int total, string solutionName, string projectName)
         {
             Console.WriteLine($"[{i}/{total}] {projectName}");
-            var projectItem = dte.ToolWindows.SolutionExplorer.GetItem($@"{solutionName}\{projectName}");
+            var x = dte.ToolWindows.SolutionExplorer.GetItem("CI.CBS").UIHierarchyItems.Count;
+            //var projectItem = dte.ToolWindows.SolutionExplorer.GetItem($@"{solutionName}\{projectName}");
+            var projectItem = ExecuteWithRetry(() => GetItemWorkaround(dte.ToolWindows.SolutionExplorer,$@"{solutionName}\{projectName}"));
             projectItem.Select(EnvDTE.vsUISelectionType.vsUISelectionTypeSelect);
             dte.ExecuteCommand("ClassViewContextMenus.ClassViewProject.Migratepackages.configtoPackageReference");
             return projectName;
         }
+
+        static UIHierarchyItem GetItemWorkaround(UIHierarchy uh, string item)
+        {
+            var items = item.Split('\\');
+            UIHierarchyItem uii = null;
+            foreach (var s in items)
+            {
+                    uii = uii == null ? uh.GetItem(s) : uii.UIHierarchyItems.Item(s);
+                    uii.Select(vsUISelectionType.vsUISelectionTypeSelect);
+            }
+
+            return uii;
+        }
+
         private static T WaitForResult<T>(Func<T> func, Predicate<T> isReady)
         {
             T res;
@@ -222,29 +238,38 @@ namespace Ceridian
             int i = 0;
             foreach (var project in projects)
             {
-                ++i;
-                var projectFullName = ExecuteWithRetry(() => project.UniqueName);
-                var projectName = GetProjectName(projectFullName);
-                ExecuteWithRetry(() => StartProjectMigration(dte, i, projects.Count, solutionName, projectName));
-                var handle = WaitForResult(GetDialogHandle, h => h != HWND.Zero);
-
-                SetForegroundWindow(handle);
-                SendKeys.SendWait("{ENTER}");
-
-                int j = 0;
-                var packagesConfigFilePath = $@"{projectFullName}\..\packages.config";
-                string htmlReportFilePath = WaitForResult(() => getHTMLReportFilePath(projectName), path => path != null || ++j >= 60 && !File.Exists(packagesConfigFilePath));
-
-                if (htmlReportFilePath != null)
+                try
                 {
-                    string htmlReport = WaitForResult(() => TryReadAllText(htmlReportFilePath), content => content != null);
-                    Process.Start("taskkill", "/f /im " + DEFAULT_BROWSER);
-                    if (htmlReport.Contains("No issues were found."))
+                    ++i;
+                    var projectFullName = ExecuteWithRetry(() => project.UniqueName);
+                    var projectName = GetProjectName(projectFullName);
+                    ExecuteWithRetry(() => StartProjectMigration(dte, i, projects.Count, solutionName, projectName));
+                    var handle = WaitForResult(GetDialogHandle, h => h != HWND.Zero);
+
+                    SetForegroundWindow(handle);
+                    SendKeys.SendWait("{ENTER}");
+
+                    int j = 0;
+                    var packagesConfigFilePath = $@"{projectFullName}\..\packages.config";
+                    string htmlReportFilePath = WaitForResult(() => getHTMLReportFilePath(projectName), path => path != null || ++j >= 60 && !File.Exists(packagesConfigFilePath));
+
+                    if (htmlReportFilePath != null)
                     {
-                        Directory.Delete($@"{htmlReportFilePath}\..\..", true);
+                        string htmlReport = WaitForResult(() => TryReadAllText(htmlReportFilePath), content => content != null);
+                        Process.Start("taskkill", "/f /im " + DEFAULT_BROWSER);
+                        if (htmlReport.Contains("No issues were found."))
+                        {
+                            Directory.Delete($@"{htmlReportFilePath}\..\..", true);
+                        }
                     }
+                    ExecuteWithRetry(() => Save(project));
                 }
-                ExecuteWithRetry(() => Save(project));
+                catch (Exception e)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine(e);
+                    Console.ResetColor();
+                }
             }
         }
 
