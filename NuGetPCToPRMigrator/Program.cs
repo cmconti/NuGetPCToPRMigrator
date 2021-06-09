@@ -127,7 +127,6 @@ namespace Ceridian
         private static string StartProjectMigration(EnvDTE80.DTE2 dte, int i, int total, string solutionName, string projectName)
         {
             Console.WriteLine($"[{i}/{total}] {projectName}");
-            var x = dte.ToolWindows.SolutionExplorer.GetItem("CI.CBS").UIHierarchyItems.Count;
             //var projectItem = dte.ToolWindows.SolutionExplorer.GetItem($@"{solutionName}\{projectName}");
             var projectItem = ExecuteWithRetry(() => GetItemWorkaround(dte.ToolWindows.SolutionExplorer,$@"{solutionName}\{projectName}"));
             projectItem.Select(EnvDTE.vsUISelectionType.vsUISelectionTypeSelect);
