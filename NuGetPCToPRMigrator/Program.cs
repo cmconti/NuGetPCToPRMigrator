@@ -95,8 +95,8 @@ namespace Ceridian
                     }
                     while (dte == null);
                 }
-                MigrateSolution(dte, slnFilePath);
-                if (devenv != null)
+                var ok  = MigrateSolution(dte, slnFilePath);
+                if (devenv != null && ok)
                 {
                     devenv.Kill();
                 }
@@ -203,8 +203,9 @@ namespace Ceridian
                 .FirstOrDefault() : null;
         }
 
-        private static void MigrateSolution(EnvDTE80.DTE2 dte, string slnFilePath)
+        private static bool MigrateSolution(EnvDTE80.DTE2 dte, string slnFilePath)
         {
+            bool ok = true;
             var getHTMLReportFilePath = GetHtmlReportFilePathFunc(slnFilePath);
 
             var solutionName = Path.GetFileNameWithoutExtension(slnFilePath);
@@ -255,7 +256,7 @@ namespace Ceridian
                     if (htmlReportFilePath != null)
                     {
                         string htmlReport = WaitForResult(() => TryReadAllText(htmlReportFilePath), content => content != null);
-                        Process.Start("taskkill", "/f /im " + DEFAULT_BROWSER);
+                        //Process.Start("taskkill", "/f /im " + DEFAULT_BROWSER);
                         if (htmlReport.Contains("No issues were found."))
                         {
                             Directory.Delete($@"{htmlReportFilePath}\..\..", true);
@@ -268,8 +269,11 @@ namespace Ceridian
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine(e);
                     Console.ResetColor();
+                    ok = false;
                 }
             }
+
+            return ok;
         }
 
         static string GetProjectName(string uniqueName)
