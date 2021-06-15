@@ -83,6 +83,10 @@ namespace Ceridian
 
             foreach (var slnFilePath in args.Select(Path.GetFullPath))
             {
+                Console.ForegroundColor=ConsoleColor.Yellow;
+                Console.WriteLine(slnFilePath);
+                Console.ResetColor();
+
                 Process devenv = null;
                 var dte = RunningVSInstanceFinder.Find(slnFilePath);
                 if (dte == null)
@@ -105,7 +109,7 @@ namespace Ceridian
 
         private static T ExecuteWithRetry<T>(Func<T> func)
         {
-            int retryCount = 2;
+            int retryCount = 10;
             for (; ; )
             {
                 try
