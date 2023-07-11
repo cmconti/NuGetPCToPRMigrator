@@ -15,7 +15,8 @@ namespace Ceridian
 
     public static class Program
     {
-        private const string DEVENV = @"C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\IDE\devenv.exe";
+        //private const string DEVENV = @"C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\Common7\IDE\devenv.exe";
+        private const string DEVENV = @"C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\IDE\devenv.exe";
         private const string DEFAULT_BROWSER = "chrome.exe";
 
         private delegate bool EnumWindowsProc(HWND hWnd, int lParam);
@@ -83,9 +84,7 @@ namespace Ceridian
 
             foreach (var slnFilePath in args.Select(Path.GetFullPath))
             {
-                Console.ForegroundColor=ConsoleColor.Yellow;
-                Console.WriteLine(slnFilePath);
-                Console.ResetColor();
+                WriteConsole(slnFilePath, ConsoleColor.Yellow);
 
                 Process devenv = null;
                 var dte = RunningVSInstanceFinder.Find(slnFilePath);
@@ -128,19 +127,19 @@ namespace Ceridian
             }
         }
 
-        private static string StartProjectMigration(EnvDTE80.DTE2 dte, int i, int total, string solutionName, string projectName)
+        private static bool StartProjectMigration(EnvDTE80.DTE2 dte, int i, int total, string solutionName, string projectRelativeFilePath, string projectRelativeSlnPath)
         {
-            Console.WriteLine($"[{i}/{total}] {projectName}");
-            //var projectItem = dte.ToolWindows.SolutionExplorer.GetItem($@"{solutionName}\{projectName}");
-            var projectItem = ExecuteWithRetry(() => GetItemWorkaround(dte.ToolWindows.SolutionExplorer,$@"{solutionName}\{projectName}"));
+            Console.WriteLine($"[{i}/{total}] {projectRelativeFilePath}");
+            var projectItem = ExecuteWithRetry(() => GetItemWorkaround(dte.ToolWindows.SolutionExplorer, $@"{solutionName}\{projectRelativeSlnPath}"));
             projectItem.Select(EnvDTE.vsUISelectionType.vsUISelectionTypeSelect);
             dte.ExecuteCommand("ClassViewContextMenus.ClassViewProject.Migratepackages.configtoPackageReference");
-            return projectName;
+            return true; //dummy return value just to satisfy ExecuteWithRetry
         }
 
-        static UIHierarchyItem GetItemWorkaround(UIHierarchy uh, string item)
+        //select each element of the project item and its parents in the UI
+        static UIHierarchyItem GetItemWorkaround(UIHierarchy uh, string projectFullSlnPath)
         {
-            var items = item.Split('\\');
+            var items = projectFullSlnPath.Split('\\');
             UIHierarchyItem uii = null;
             foreach (var s in items)
             {
@@ -200,10 +199,10 @@ namespace Ceridian
                 done = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
 
-            return projectName => Directory.Exists(migrationBackupFolderPath) ? Directory
+            return projectRelativeSlnPath => Directory.Exists(migrationBackupFolderPath) ? Directory
                 .EnumerateDirectories(migrationBackupFolderPath)
-                .Where(path => !done.Contains(path) && File.Exists($@"{path}\{projectName}\NuGetUpgradeLog.html"))
-                .Select(path => $@"{path}\{projectName}\NuGetUpgradeLog.html")
+                .Where(path => !done.Contains(path) && File.Exists($@"{path}\{projectRelativeSlnPath}\NuGetUpgradeLog.html"))
+                .Select(path => $@"{path}\{projectRelativeSlnPath}\NuGetUpgradeLog.html")
                 .FirstOrDefault() : null;
         }
 
@@ -214,24 +213,24 @@ namespace Ceridian
 
             var solutionName = Path.GetFileNameWithoutExtension(slnFilePath);
 
-            IEnumerable<EnvDTE.Project> FindProjectsRecursive(EnvDTE.Project p, string prefix)
+            // enumerate the projects in the solution, and get the relative solution path (which may not be the same as the the relative file path)
+            IEnumerable<Tuple<string, EnvDTE.Project>> FindProjectsRecursive(EnvDTE.Project p, string prefix)
             {
                 if (IsClassLibraryWithPackagesConfig(p))
-                    yield return p;
+                    yield return new Tuple<string, EnvDTE.Project>(prefix + p.Name, p);
                 if (p.Kind == FolderKind)
                 {
                     foreach (EnvDTE.ProjectItem pProjectItem in p.ProjectItems)
                     {
                         if (pProjectItem.SubProject != null && (pProjectItem.SubProject.Kind == ProjectKind || pProjectItem.SubProject.Kind == FolderKind))
                         {
-                            var recursePrefix = string.IsNullOrEmpty(prefix) ? "" : "\\";
-                            recursePrefix += p.FullName;
+                            var recursePrefix = string.IsNullOrEmpty(prefix) ? "" : prefix;
+                            recursePrefix += $"{p.Name}\\";
                             var recurseResult = FindProjectsRecursive(pProjectItem.SubProject, recursePrefix);
                             foreach (var item in recurseResult)
                             {
                                 yield return item;
                             }
-
                         }
                     }
                 }
@@ -240,14 +239,16 @@ namespace Ceridian
             ExecuteWithRetry(() => InitializeNuGetPackageManager(dte));
             var projects = ExecuteWithRetry(() => dte.Solution.Projects.Cast<EnvDTE.Project>().SelectMany(x=>FindProjectsRecursive(x,null)).ToList());
             int i = 0;
-            foreach (var project in projects)
+            foreach (var projectInfo in projects)
             {
+                var projectSlnPath = projectInfo.Item1;
+                var project = projectInfo.Item2;
                 try
                 {
                     ++i;
                     var projectFullName = ExecuteWithRetry(() => project.UniqueName);
-                    var projectName = GetProjectName(projectFullName);
-                    ExecuteWithRetry(() => StartProjectMigration(dte, i, projects.Count, solutionName, projectName));
+                    var projectName = project.Name;
+                    ExecuteWithRetry(() => StartProjectMigration(dte, i, projects.Count, solutionName, projectName, projectSlnPath));
                     var handle = WaitForResult(GetDialogHandle, h => h != HWND.Zero);
 
                     SetForegroundWindow(handle);
@@ -255,7 +256,8 @@ namespace Ceridian
 
                     int j = 0;
                     var packagesConfigFilePath = $@"{projectFullName}\..\packages.config";
-                    string htmlReportFilePath = WaitForResult(() => getHTMLReportFilePath(projectName), path => path != null || ++j >= 60 && !File.Exists(packagesConfigFilePath));
+                    string htmlReportFilePath = WaitForResult(() => getHTMLReportFilePath(projectSlnPath),
+                        path => path != null || ++j >= 60 && !File.Exists(packagesConfigFilePath));
 
                     if (htmlReportFilePath != null)
                     {
@@ -263,16 +265,20 @@ namespace Ceridian
                         //Process.Start("taskkill", "/f /im " + DEFAULT_BROWSER);
                         if (htmlReport.Contains("No issues were found."))
                         {
+                            Thread.Sleep(1000); // give the browser a moment to show the page before we delete it
                             Directory.Delete($@"{htmlReportFilePath}\..\..", true);
+                            WriteConsole("\tNo issues were found.", ConsoleColor.Green);
+                        }
+                        else
+                        {
+                            WriteConsole("\tOne or more issues were found.", ConsoleColor.Red);
                         }
                     }
                     ExecuteWithRetry(() => Save(project));
                 }
                 catch (Exception e)
                 {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine(e);
-                    Console.ResetColor();
+                    WriteConsole(e.ToString(), ConsoleColor.Red);
                     ok = false;
                 }
             }
@@ -280,9 +286,11 @@ namespace Ceridian
             return ok;
         }
 
-        static string GetProjectName(string uniqueName)
+        private static void WriteConsole(string text, ConsoleColor color)
         {
-            return string.Join("\\", uniqueName.Split('\\').Where(x => !x.EndsWith(".csproj")));
+            Console.ForegroundColor = color;
+            Console.WriteLine(text);
+            Console.ResetColor();
         }
 
         private static bool IsWebApplication(EnvDTE.Project project) =>
