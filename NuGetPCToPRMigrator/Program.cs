@@ -133,13 +133,20 @@ namespace Ceridian
         {
             Console.WriteLine($"[{i}/{total}] {projectRelativeFilePath}");
             var projectItem = ExecuteWithRetry(() => GetItemWorkaround(dte.ToolWindows.SolutionExplorer, $@"{solutionName}\{projectRelativeSlnPath}"));
-            projectItem.Select(EnvDTE.vsUISelectionType.vsUISelectionTypeSelect);
-            dte.ExecuteCommand("ClassViewContextMenus.ClassViewProject.Migratepackages.configtoPackageReference");
+            if (ProjectUsesPackagesConfig(projectItem))
+            {
+                projectItem.Select(EnvDTE.vsUISelectionType.vsUISelectionTypeSelect);
+                dte.ExecuteCommand("ClassViewContextMenus.ClassViewProject.Migratepackages.configtoPackageReference");
+            }
+            else
+            {
+                throw new ProjectDoesNotUsePackagesConfigException();
+            }
             return true; //dummy return value just to satisfy ExecuteWithRetry
         }
 
         //select each element of the project item and its parents in the UI
-        static UIHierarchyItem GetItemWorkaround(UIHierarchy uh, string projectFullSlnPath)
+        private static UIHierarchyItem GetItemWorkaround(UIHierarchy uh, string projectFullSlnPath)
         {
             var items = projectFullSlnPath.Split('\\');
             UIHierarchyItem uii = null;
@@ -158,6 +165,61 @@ namespace Ceridian
             }
 
             return uii;
+        }
+
+        private static bool ProjectUsesPackagesConfig(UIHierarchyItem uii)
+        {
+            if (uii.Object is Project project)
+            {
+                return ProjectUsesPackagesConfig(project, true);
+            }
+            return false;
+        }
+
+        //Check if project uses packages.config
+        //if waitForFile is true, and the files does not exist, this may be a case where 2 or more project files are in
+        //the same directory and a previous project has already been migrated, which would have deleted the file.
+        // in that case, give the user the opportunity to restore the file or quit.
+        private static bool ProjectUsesPackagesConfig(Project project, bool waitForFile = false)
+        {
+            var files = GetProjectItemsRecursively(project.ProjectItems);
+            bool usesPackagesConfig = files.Any(f => f.EndsWith("/packages.config", StringComparison.InvariantCultureIgnoreCase));
+
+            if (waitForFile)
+            {
+                var configFile = files.FirstOrDefault(f => f.EndsWith("/packages.config", StringComparison.InvariantCultureIgnoreCase));
+                if (!File.Exists(configFile))
+                {
+                    var dlgResult = MessageBox.Show($"{configFile} does not exist.`n`nRestore the file and press OK to continue or press Cancel to abort",
+                        "Error", MessageBoxButtons.OKCancel, MessageBoxIcon.Error);
+                    if (dlgResult == DialogResult.Cancel)
+                        throw new OperationCanceledException();
+                }
+            }
+
+            return usesPackagesConfig;
+        }
+
+        //https://gist.github.com/niaher/bfa87f0aeda1204091fe
+        private static List<string> GetProjectItemsRecursively(EnvDTE.ProjectItems items)
+        {
+            var ret = new List<string>();
+            if (items == null) return ret;
+
+            foreach (EnvDTE.ProjectItem item in items)
+            {
+                string result = item.FileNames[1].Replace("\\", "/");
+
+                // If not folder.
+                if (result[result.Length - 1] != '\\')
+                {
+                    ret.Add(result);
+                }
+
+                ret.AddRange(GetProjectItemsRecursively(item.ProjectItems));
+            }
+
+            return ret;
         }
 
         private static T WaitForResult<T>(Func<T> func, Predicate<T> isReady)
@@ -247,6 +309,7 @@ namespace Ceridian
             }
 
             ExecuteWithRetry(() => InitializeNuGetPackageManager(dte));
+            WriteConsole("Enumerating projects in solution.", ConsoleColor.Green);
             var projects = ExecuteWithRetry(() => dte.Solution.Projects.Cast<EnvDTE.Project>().SelectMany(x => FindProjectsRecursive(x, null)).ToList());
             int i = 0;
             foreach (var projectInfo in projects)
@@ -258,33 +321,40 @@ namespace Ceridian
                     ++i;
                     var projectFullName = ExecuteWithRetry(() => project.UniqueName);
                     var projectName = project.Name;
-                    ExecuteWithRetry(() => StartProjectMigration(dte, i, projects.Count, solutionName, projectName, projectSlnPath));
-                    var handle = WaitForResult(GetDialogHandle, h => h != HWND.Zero);
-
-                    SetForegroundWindow(handle);
-                    SendKeys.SendWait("{ENTER}");
-
-                    int j = 0;
-                    var packagesConfigFilePath = $@"{projectFullName}\..\packages.config";
-                    string htmlReportFilePath = WaitForResult(() => getHTMLReportFilePath(projectSlnPath),
-                        path => path != null || ++j >= 60 && !File.Exists(packagesConfigFilePath));
-
-                    if (htmlReportFilePath != null)
+                    try
                     {
-                        string htmlReport = WaitForResult(() => TryReadAllText(htmlReportFilePath), content => content != null);
-                        //Process.Start("taskkill", "/f /im " + DEFAULT_BROWSER);
-                        if (htmlReport.Contains("No issues were found."))
+                        ExecuteWithRetry(() => StartProjectMigration(dte, i, projects.Count, solutionName, projectName, projectSlnPath));
+                        var handle = WaitForResult(GetDialogHandle, h => h != HWND.Zero);
+
+                        SetForegroundWindow(handle);
+                        SendKeys.SendWait("{ENTER}");
+
+                        int j = 0;
+                        var packagesConfigFilePath = $@"{projectFullName}\..\packages.config";
+                        string htmlReportFilePath = WaitForResult(() => getHTMLReportFilePath(projectSlnPath),
+                            path => path != null || ++j >= 60 && !File.Exists(packagesConfigFilePath));
+
+                        if (htmlReportFilePath != null)
                         {
-                            Thread.Sleep(1500); // give the browser a moment to show the page before we delete it
-                            Directory.Delete($@"{htmlReportFilePath}\..\..", true);
-                            WriteConsole("\tNo issues were found.", ConsoleColor.Green);
+                            string htmlReport = WaitForResult(() => TryReadAllText(htmlReportFilePath), content => content != null);
+                            //Process.Start("taskkill", "/f /im " + DEFAULT_BROWSER);
+                            if (htmlReport.Contains("No issues were found."))
+                            {
+                                Thread.Sleep(1500); // give the browser a moment to show the page before we delete it
+                                Directory.Delete($@"{htmlReportFilePath}\..\..", true);
+                                WriteConsole("\tNo issues were found.", ConsoleColor.Green);
+                            }
+                            else
+                            {
+                                WriteConsole("\tOne or more issues were found.", ConsoleColor.Red);
+                            }
                         }
-                        else
-                        {
-                            WriteConsole("\tOne or more issues were found.", ConsoleColor.Red);
-                        }
+                        ExecuteWithRetry(() => Save(project));
                     }
-                    ExecuteWithRetry(() => Save(project));
+                    catch (ProjectDoesNotUsePackagesConfigException)
+                    {
+                        WriteConsole("\tDoes not use packages.config.", ConsoleColor.Green);
+                    }
                 }
                 catch (Exception e)
                 {
@@ -311,7 +381,11 @@ namespace Ceridian
 
         private static bool IsClassLibraryWithPackagesConfig(EnvDTE.Project p) =>
             p.Kind == "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}" &&
-            File.Exists($@"{p.FullName}\..\packages.config") &&
+            ProjectUsesPackagesConfig(p) &&
             !IsWebApplication(p);
+    }
+
+    public class ProjectDoesNotUsePackagesConfigException : Exception
+    {
     }
 }
