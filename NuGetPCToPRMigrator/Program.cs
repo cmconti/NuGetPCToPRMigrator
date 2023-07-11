@@ -5,11 +5,13 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
+
 using HWND = System.IntPtr;
 
 namespace Ceridian
 {
     using EnvDTE;
+
     using Process = System.Diagnostics.Process;
     using Thread = System.Threading.Thread;
 
@@ -98,7 +100,7 @@ namespace Ceridian
                     }
                     while (dte == null);
                 }
-                var ok  = MigrateSolution(dte, slnFilePath);
+                var ok = MigrateSolution(dte, slnFilePath);
                 if (devenv != null && ok)
                 {
                     devenv.Kill();
@@ -143,8 +145,16 @@ namespace Ceridian
             UIHierarchyItem uii = null;
             foreach (var s in items)
             {
-                    uii = uii == null ? uh.GetItem(s) : uii.UIHierarchyItems.Item(s);
-                    uii.Select(vsUISelectionType.vsUISelectionTypeSelect);
+                uii = uii == null ? uh.GetItem(s) : uii.UIHierarchyItems.Item(s);
+                uii.Select(vsUISelectionType.vsUISelectionTypeSelect);
+                if (uii.UIHierarchyItems.Count > 0)
+                {
+                    uii.UIHierarchyItems.Expanded = true;
+                }
+                if ((uii.Object is Project project) && (project.Kind == Constants.vsProjectKindSolutionItems))
+                {
+                    uii.UIHierarchyItems.Expanded = true;
+                }
             }
 
             return uii;
@@ -237,7 +247,7 @@ namespace Ceridian
             }
 
             ExecuteWithRetry(() => InitializeNuGetPackageManager(dte));
-            var projects = ExecuteWithRetry(() => dte.Solution.Projects.Cast<EnvDTE.Project>().SelectMany(x=>FindProjectsRecursive(x,null)).ToList());
+            var projects = ExecuteWithRetry(() => dte.Solution.Projects.Cast<EnvDTE.Project>().SelectMany(x => FindProjectsRecursive(x, null)).ToList());
             int i = 0;
             foreach (var projectInfo in projects)
             {
@@ -265,7 +275,7 @@ namespace Ceridian
                         //Process.Start("taskkill", "/f /im " + DEFAULT_BROWSER);
                         if (htmlReport.Contains("No issues were found."))
                         {
-                            Thread.Sleep(1000); // give the browser a moment to show the page before we delete it
+                            Thread.Sleep(1500); // give the browser a moment to show the page before we delete it
                             Directory.Delete($@"{htmlReportFilePath}\..\..", true);
                             WriteConsole("\tNo issues were found.", ConsoleColor.Green);
                         }
