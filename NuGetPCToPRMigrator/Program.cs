@@ -136,6 +136,13 @@ namespace Ceridian
             if (ProjectUsesPackagesConfig(projectItem))
             {
                 projectItem.Select(EnvDTE.vsUISelectionType.vsUISelectionTypeSelect);
+
+                //restore packages first
+                //do this before every migration because when multiple projects use the same packages and one gets migrated,
+                //the deleted packages sometimes bork the migration for the next project
+                dte.ExecuteCommand("ProjectAndSolutionContextMenus.Solution.RestoreNuGetPackages");
+
+                //now migrate
                 dte.ExecuteCommand("ClassViewContextMenus.ClassViewProject.Migratepackages.configtoPackageReference");
             }
             else
@@ -309,7 +316,7 @@ namespace Ceridian
             }
 
             ExecuteWithRetry(() => InitializeNuGetPackageManager(dte));
-            WriteConsole("Enumerating projects in solution.", ConsoleColor.Green);
+            WriteConsole($"{DateTime.Now.ToString("t")} Enumerating projects in solution.", ConsoleColor.Green);
             var projects = ExecuteWithRetry(() => dte.Solution.Projects.Cast<EnvDTE.Project>().SelectMany(x => FindProjectsRecursive(x, null)).ToList());
             int i = 0;
             foreach (var projectInfo in projects)
